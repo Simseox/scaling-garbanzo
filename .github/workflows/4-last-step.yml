@@ -1,0 +1,187 @@
+name: Step 4 # Last step of the exercise
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+  pull-requests: write
+
+env:
+  REVIEW_FILE: ".github/steps/x-review.md"
+
+jobs:
+  find_exercise:
+    name: Find Exercise Issue
+    uses: skills/exercise-toolkit/.github/workflows/find-exercise-issue.yml@v0.7.1
+
+  finish_exercise:
+    name: Finish Exercise
+    needs: [find_exercise]
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == true }}
+    uses: skills/exercise-toolkit/.github/workflows/finish-exercise.yml@v0.7.1
+    with:
+      issue-url: ${{ needs.find_exercise.outputs.issue-url }}
+      exercise-title: "GitHub Basics"
+      update-readme-with-congratulations: false
+
+  fr_congrats_comment:
+    name: Replace official congrats with FR
+    needs: [find_exercise, finish_exercise]
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == true }}
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_NUMBER: ${{ needs.find_exercise.outputs.issue-number }}
+    steps:
+      - name: Replace EN comment with FR body
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const issue_number = Number('${{ env.ISSUE_NUMBER }}');
+            const frBody = [
+              `🎉 Félicitations @${context.actor} tu as terminé l’exercice **GitHub Basics**.`,
+              `Le dépôt a été mis à jour pour marquer la réussite, et le README affiche un message de félicitations en français.`,
+              `➡️ Retourne à la page d’accueil du dépôt pour voir le résultat.`
+            ].join('\n\n');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number, per_page: 100, sort: 'created', direction: 'desc'
+            });
+            const target = comments.find(c =>
+              c.user?.login === 'github-actions[bot]' &&
+              /Congratulations|You finished the exercise/i.test(c.body || '')
+            );
+            if (target) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: target.id, body: frBody });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body: frBody });
+            }
+
+  finalize_fr:
+    name: Finalize FR README
+    needs: [find_exercise, finish_exercise, fr_congrats_comment]
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == true }}
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_NUMBER: ${{ needs.find_exercise.outputs.issue-number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Update README with final FR block and share links
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const {owner, repo} = context.repo;
+            const login = context.actor;
+            const repoUrl = `https://github.com/${owner}/${repo}`;
+            const text = `Je viens de terminer l’exercice "GitHub Basics" ! 🎉\n\n${repoUrl}\n\n#GitHubSkills #OpenSource #GitHubLearn`;
+            const enc = encodeURIComponent(text);
+            const shareX = `https://twitter.com/intent/tweet?text=${enc}`;
+            const shareBsky = `https://bsky.app/intent/compose?text=${enc}`;
+            const shareLinkedIn = `https://www.linkedin.com/feed/?shareActive=true&text=${enc}`;
+            const lines = [
+              '<div align="center">',
+              '',
+              '# 🎉 Félicitations ' + login + ' ! 🎉',
+              '',
+              '<img src="https://octodex.github.com/images/welcometocat.png" height="200px" />',
+              '',
+              '### 🌟 Tu as terminé l’exercice avec succès ! 🌟',
+              '',
+              '## 🚀 Partage ta réussite',
+              '',
+              '**Montre tes nouvelles compétences et inspire les autres !**',
+              '',
+              `<a href="${shareX}" target="_blank" rel="noopener noreferrer">`,
+              '  <img src="https://img.shields.io/badge/Partager%20sur%20X-1da1f2?style=for-the-badge&logo=x&logoColor=white" alt="Partager sur X" />',
+              '</a>',
+              `<a href="${shareBsky}" target="_blank" rel="noopener noreferrer">`,
+              '  <img src="https://img.shields.io/badge/Partager%20sur%20Bluesky-0085ff?style=for-the-badge&logo=bluesky&logoColor=white" alt="Partager sur Bluesky" />',
+              '</a>',
+              `<a href="${shareLinkedIn}" target="_blank" rel="noopener noreferrer">`,
+              '  <img src="https://img.shields.io/badge/Partager%20sur%20LinkedIn-0077b5?style=for-the-badge&logo=linkedin&logoColor=white" alt="Partager sur LinkedIn" />',
+              '</a>',
+              '',
+              '### 🎯 Et maintenant ?',
+              '',
+              '**Garde l’élan !**',
+              '',
+              `[![](https://img.shields.io/badge/Revenir%20%C3%A0%20l%27exercice-%E2%86%92-1f883d?style=for-the-badge&logo=github&labelColor=197935)](${repoUrl}/issues/${process.env.ISSUE_NUMBER})`,
+              '[![GitHub Skills](https://img.shields.io/badge/D%C3%A9couvrir%20GitHub%20Skills-000000?style=for-the-badge&logo=github&logoColor=white)](https://learn.github.com/skills)',
+              '',
+              '*Il n’y a pas de meilleure façon d’apprendre que de construire des choses !* 🚀',
+              '',
+              '</div>',
+              '',
+              '---',
+              ''
+            ];
+            const block = lines.join('\n');
+            const readmePath = path.join(process.env.GITHUB_WORKSPACE, 'README.md');
+            const current = fs.existsSync(readmePath) ? fs.readFileSync(readmePath, 'utf8') : '';
+            fs.writeFileSync(readmePath, block + current, 'utf8');
+
+      - name: Commit and push final README
+        shell: bash
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -e
+          git add README.md
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "docs(readme): add final congratulations block 🎉"
+          fi
+          git fetch origin main
+          git pull --rebase origin main || true
+          git push origin HEAD:main
+
+  post_review_content:
+    name: Post review content (FR)
+    needs: [find_exercise, fr_congrats_comment, finalize_fr]
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == true }}
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_REPOSITORY: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ needs.find_exercise.outputs.issue-number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Create comment - step finished - final review next
+        uses: GrantBirki/comment@v2.1.1
+        with:
+          repository: ${{ env.ISSUE_REPOSITORY }}
+          issue-number: ${{ env.ISSUE_NUMBER }}
+          file: .github/i18n/fr/lesson-review.md
+      - name: Create comment - add review content
+        uses: GrantBirki/comment@v2.1.1
+        with:
+          repository: ${{ env.ISSUE_REPOSITORY }}
+          issue-number: ${{ env.ISSUE_NUMBER }}
+          file: ${{ env.REVIEW_FILE }}
+
+  disable_step4:
+    name: Disable Step 4
+    needs: [post_review_content]
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged == true }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Disable workflow file
+        run: gh workflow disable ".github/workflows/4-last-step.yml"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        continue-on-error: true
